@@ -117,7 +117,7 @@ if st.session_state.user is None:
             if user:
                 st.session_state.user = username
                 st.success("Bine ai venit!")
-                st.experimental_rerun()
+                st.rerun()  # <-- actualizat
             else:
                 st.error("Date greșite!")
 
@@ -254,4 +254,4 @@ else:
     elif option == "Logout":
 
         st.session_state.user = None
-        st.experimental_rerun()
+        st.rerun()  # <-- actualizat
