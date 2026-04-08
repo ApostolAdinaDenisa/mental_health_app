@@ -277,8 +277,11 @@ def ensure_users_schema_columns():
 
     if "phone" not in existing_columns:
         c.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+    if "email" not in existing_columns:
+        c.execute("ALTER TABLE users ADD COLUMN email TEXT")
 
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone)")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
 
 ensure_users_schema_columns()
 
@@ -466,13 +469,14 @@ conn.commit()
 # ===============================
 # DATABASE FUNCTIONS
 # ===============================
-def register(username, password, phone):
+def register(username, password, phone, email):
     try:
         date = str(datetime.date.today())
         phone_clean = normalize_phone(phone)
+        email_clean = str(email).strip().lower()
         c.execute(
-            "INSERT INTO users (username, password, phone, created_date) VALUES (?,?,?,?)",
-            (username, password, phone_clean, date)
+            "INSERT INTO users (username, password, phone, email, created_date) VALUES (?,?,?,?,?)",
+            (username, password, phone_clean, email_clean, date)
         )
         conn.commit()
         return True
@@ -482,6 +486,26 @@ def register(username, password, phone):
 def login(username, password):
     c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
     return c.fetchone()
+
+def looks_like_valid_email(value):
+    text = str(value).strip()
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text))
+
+def get_user_by_username_and_email(username, email):
+    c.execute(
+        "SELECT username FROM users WHERE username=? AND lower(email)=?",
+        (str(username).strip(), str(email).strip().lower()),
+    )
+    return c.fetchone()
+
+def update_user_password(username, new_password):
+    c.execute("UPDATE users SET password=? WHERE username=?", (new_password, username))
+    conn.commit()
+    return c.rowcount > 0
+
+def generate_password_reset_code(length=6):
+    digits = "0123456789"
+    return "".join(secrets.choice(digits) for _ in range(int(length)))
 
 def _as_bool(value, default=True):
     if isinstance(value, bool):
@@ -1468,6 +1492,14 @@ def generate_pdf_report(summary_text):
 if "user" not in st.session_state:
     st.session_state.user = None
 
+if "password_reset" not in st.session_state:
+    st.session_state.password_reset = {
+        "username": "",
+        "email": "",
+        "code_hash": "",
+        "expires_at": 0.0,
+    }
+
 # ===============================
 # LOGIN / REGISTER PAGE
 # ===============================
@@ -1493,25 +1525,92 @@ if st.session_state.user is None:
                     st.rerun()
                 else:
                     st.error("Invalid credentials!")
+
+            st.divider()
+            with st.expander("Forgot password? Reset by email"):
+                st.caption("Step 1: Request a reset code")
+                reset_user = st.text_input("Username", key="reset_user")
+                reset_email = st.text_input("Account email", key="reset_email")
+
+                if st.button("Send Reset Code", key="send_reset_code", use_container_width=True):
+                    if not reset_user or not reset_email:
+                        st.error("Please enter username and email.")
+                    elif not looks_like_valid_email(reset_email):
+                        st.error("Please enter a valid email address.")
+                    elif not get_user_by_username_and_email(reset_user, reset_email):
+                        st.error("Username/email combination not found.")
+                    else:
+                        reset_code = generate_password_reset_code(6)
+                        subject = "SereneMind Password Reset Code"
+                        body = (
+                            f"Hello {reset_user},\n\n"
+                            f"Your SereneMind password reset code is: {reset_code}\n"
+                            "This code expires in 10 minutes.\n\n"
+                            "If you did not request this, you can ignore this email."
+                        )
+                        sent, msg = send_email_notification(reset_email.strip(), subject, body)
+                        if sent:
+                            st.session_state.password_reset = {
+                                "username": reset_user.strip(),
+                                "email": reset_email.strip().lower(),
+                                "code_hash": hashlib.sha256(reset_code.encode("utf-8")).hexdigest(),
+                                "expires_at": time.time() + (10 * 60),
+                            }
+                            st.success("Reset code sent. Check your email.")
+                        else:
+                            st.error(f"Could not send reset code: {msg}")
+
+                st.caption("Step 2: Confirm code and choose a new password")
+                entered_code = st.text_input("Reset code", key="reset_code_input")
+                new_reset_pass = st.text_input("New password", type="password", key="reset_new_pass")
+                new_reset_pass_confirm = st.text_input("Confirm new password", type="password", key="reset_new_pass_confirm")
+
+                if st.button("Update Password", key="confirm_password_reset", use_container_width=True):
+                    reset_state = st.session_state.password_reset
+                    if not reset_state.get("code_hash"):
+                        st.error("Please request a reset code first.")
+                    elif time.time() > float(reset_state.get("expires_at", 0.0)):
+                        st.error("Reset code expired. Please request a new code.")
+                    elif not entered_code or hashlib.sha256(entered_code.strip().encode("utf-8")).hexdigest() != reset_state.get("code_hash"):
+                        st.error("Invalid reset code.")
+                    elif not new_reset_pass:
+                        st.error("Please enter a new password.")
+                    elif new_reset_pass != new_reset_pass_confirm:
+                        st.error("Passwords don't match.")
+                    else:
+                        updated = update_user_password(reset_state["username"], new_reset_pass)
+                        if updated:
+                            st.session_state.password_reset = {
+                                "username": "",
+                                "email": "",
+                                "code_hash": "",
+                                "expires_at": 0.0,
+                            }
+                            st.success("Password updated successfully. You can now login.")
+                        else:
+                            st.error("Could not update password. Please try again.")
         
         with tab2:
             st.markdown("#### Create New Account")
             new_user = st.text_input("Choose Username", key="reg_user")
+            new_email = st.text_input("Email", key="reg_email")
             new_phone = st.text_input("Phone (E.164, ex: +40700111222)", key="reg_phone")
             new_pass = st.text_input("Choose Password", type="password", key="reg_pass")
             new_pass_confirm = st.text_input("Confirm Password", type="password", key="reg_pass_conf")
             
             if st.button("Create Account", use_container_width=True):
-                if not new_user or not new_phone or not new_pass:
+                if not new_user or not new_email or not new_phone or not new_pass:
                     st.error("Please fill all fields")
+                elif not looks_like_valid_email(new_email):
+                    st.error("Please enter a valid email address")
                 elif not normalize_phone(new_phone).startswith("+"):
                     st.error("Please enter a valid phone in E.164 format (example: +40700111222)")
                 elif new_pass != new_pass_confirm:
                     st.error("Passwords don't match")
-                elif register(new_user, new_pass, new_phone):
+                elif register(new_user, new_pass, new_phone, new_email):
                     st.success("Account created! Please login.")
                 else:
-                    st.error("Username or phone already exists!")
+                    st.error("Username, phone, or email already exists!")
 
 # ===============================
 # MAIN APP

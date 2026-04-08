@@ -18,6 +18,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Account and password reset
+
+- New users must provide an email address at registration.
+- On the Login tab, use `Forgot password? Reset by email`.
+- The app sends a 6-digit reset code by email (valid for 10 minutes), then lets the user set a new password.
+
 ## Password reset by email (SMTP)
 
 For the reset-password email to work, configure these values in Streamlit secrets
